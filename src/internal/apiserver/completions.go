@@ -111,7 +111,7 @@ func (f *thinkFilter) flush(unclosedIsContent bool) string {
 	return out
 }
 
-// matches logging policy in AGENTS.md
+// matches logging policy in CONVENTIONS.md
 const maxThinkLogLen = 500 // cap think content in logs
 
 const maxLogValLen = 64
@@ -164,10 +164,23 @@ type diffusionRequestParams struct {
 }
 
 type benchCustomParams struct {
-	Stateless      *bool                   `json:"stateless,omitempty"`
-	FlashAttention *bool                   `json:"flash_attention,omitempty"`
-	ElideThinking  *bool                   `json:"elide_thinking,omitempty"`
-	Diffusion      *diffusionRequestParams `json:"diffusion,omitempty"`
+	Stateless           *bool                   `json:"stateless,omitempty"`
+	FlashAttention      *bool                   `json:"flash_attention,omitempty"`
+	ElideThinking       *bool                   `json:"elide_thinking,omitempty"`
+	EnableRLBOnPrefill  bool                    `json:"enable_rlb_on_prefill,omitempty"`
+	UseRLBGen           bool                    `json:"use_rlb_gen,omitempty"`
+	RLBAlpha            *float64                `json:"rlb_alpha,omitempty"`              // 0.0-1.0; nil = default (1.0, no blending)
+	RLBHaltRule         string                  `json:"rlb_halt_rule,omitempty"`          // halt rule name ("" = default fixed ceiling); see parseHaltRule in generate_rlb.go for menu
+	RLBTerminalHaltRule string                  `json:"rlb_terminal_halt_rule,omitempty"` // halt rule for the terminal block only ("" = reuse rlb_halt_rule); Tier 1 rules only have meaningful signal at the terminal block since upstream tops aren't yet projected through lm_head
+	RLBMagnitudeNorm    bool                    `json:"rlb_magnitude_norm,omitempty"`     // output-recycling with residual magnitude normalization (decode only)
+	UsePMM              bool                    `json:"use_pmm,omitempty"`                // enable Poor Man's Mythos two-stream decode
+	PMMSlabFirst        *int                    `json:"pmm_slab_first,omitempty"`         // first slab block index (default 2); nil = default
+	PMMSlabLast         *int                    `json:"pmm_slab_last,omitempty"`          // last slab block index (default 5); nil = default
+	PMMCap              *int                    `json:"pmm_cap,omitempty"`                // max iterations per slab block during answer phase (default 2); nil = default
+	PMMThinkCap         *int                    `json:"pmm_think_cap,omitempty"`          // max iterations per slab block during think phase (default 1); nil = default
+	PMMThinkDisabled    *bool                   `json:"pmm_think_disabled,omitempty"`     // skip Stream B entirely during think phase
+	PMMBlendAlpha       *float64                `json:"pmm_blend_alpha,omitempty"`        // shadow weight in logit blend: 1.0=pure fork, <1.0 lerps toward mainline (default 1.0)
+	Diffusion           *diffusionRequestParams `json:"diffusion,omitempty"`
 }
 
 // --- Non-streaming response types ---
@@ -449,6 +462,43 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if req.BenchCustom != nil && (req.BenchCustom.UseRLBGen || req.BenchCustom.EnableRLBOnPrefill) {
+		rlb := &inference.RLBParams{
+			Prefill: req.BenchCustom.EnableRLBOnPrefill,
+		}
+		if req.BenchCustom.UseRLBGen {
+			rlb.Decode = true
+			rlb.HaltRule = req.BenchCustom.RLBHaltRule
+			rlb.TerminalHaltRule = req.BenchCustom.RLBTerminalHaltRule
+			rlb.MagnitudeNorm = req.BenchCustom.RLBMagnitudeNorm
+			if req.BenchCustom.RLBAlpha != nil {
+				rlb.Alpha = *req.BenchCustom.RLBAlpha
+			}
+		}
+		params.RLB = rlb
+	}
+	if req.BenchCustom != nil && req.BenchCustom.UsePMM {
+		pmm := &inference.PMMParams{}
+		if req.BenchCustom.PMMSlabFirst != nil {
+			pmm.SlabFirst = *req.BenchCustom.PMMSlabFirst
+		}
+		if req.BenchCustom.PMMSlabLast != nil {
+			pmm.SlabLast = *req.BenchCustom.PMMSlabLast
+		}
+		if req.BenchCustom.PMMCap != nil {
+			pmm.Cap = *req.BenchCustom.PMMCap
+		}
+		if req.BenchCustom.PMMThinkCap != nil {
+			pmm.ThinkCap = *req.BenchCustom.PMMThinkCap
+		}
+		if req.BenchCustom.PMMThinkDisabled != nil {
+			pmm.ThinkDisabled = *req.BenchCustom.PMMThinkDisabled
+		}
+		if req.BenchCustom.PMMBlendAlpha != nil {
+			pmm.BlendAlpha = *req.BenchCustom.PMMBlendAlpha
+		}
+		params.PMM = pmm
+	}
 	params.Streaming = req.Stream
 
 	// Log any request-level parameter overrides of server config defaults.
@@ -467,6 +517,50 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.BenchCustom != nil && req.BenchCustom.FlashAttention != nil && *req.BenchCustom.FlashAttention != s.cfg.Inference.UseFlashAttention() {
 			overrides = append(overrides, fmt.Sprintf("flash_attention=%v (server: %v)", *req.BenchCustom.FlashAttention, s.cfg.Inference.UseFlashAttention()))
+		}
+		if req.BenchCustom != nil && req.BenchCustom.EnableRLBOnPrefill {
+			overrides = append(overrides, "rlb.prefill=true")
+		}
+		if req.BenchCustom != nil && req.BenchCustom.UseRLBGen {
+			overrides = append(overrides, "rlb.decode=true")
+		}
+		if req.BenchCustom != nil && req.BenchCustom.UseRLBGen && req.BenchCustom.RLBAlpha != nil {
+			overrides = append(overrides, fmt.Sprintf("rlb.alpha=%.2f", *req.BenchCustom.RLBAlpha))
+		}
+		if req.BenchCustom != nil && req.BenchCustom.UseRLBGen && req.BenchCustom.RLBHaltRule != "" {
+			overrides = append(overrides, fmt.Sprintf("rlb.halt_rule=%q", req.BenchCustom.RLBHaltRule))
+		}
+		if req.BenchCustom != nil && req.BenchCustom.UseRLBGen && req.BenchCustom.RLBTerminalHaltRule != "" {
+			overrides = append(overrides, fmt.Sprintf("rlb.terminal_halt_rule=%q", req.BenchCustom.RLBTerminalHaltRule))
+		}
+		if req.BenchCustom != nil && req.BenchCustom.UseRLBGen && req.BenchCustom.RLBMagnitudeNorm {
+			overrides = append(overrides, "rlb.magnitude_norm=true")
+		}
+		if req.BenchCustom != nil && req.BenchCustom.UsePMM {
+			overrides = append(overrides, "pmm=true")
+			if req.BenchCustom.PMMSlabFirst != nil || req.BenchCustom.PMMSlabLast != nil {
+				sf := -1
+				sl := -1
+				if req.BenchCustom.PMMSlabFirst != nil {
+					sf = *req.BenchCustom.PMMSlabFirst
+				}
+				if req.BenchCustom.PMMSlabLast != nil {
+					sl = *req.BenchCustom.PMMSlabLast
+				}
+				overrides = append(overrides, fmt.Sprintf("pmm.slab=[%d,%d]", sf, sl))
+			}
+			if req.BenchCustom.PMMCap != nil {
+				overrides = append(overrides, fmt.Sprintf("pmm.cap=%d", *req.BenchCustom.PMMCap))
+			}
+			if req.BenchCustom.PMMThinkCap != nil {
+				overrides = append(overrides, fmt.Sprintf("pmm.think_cap=%d", *req.BenchCustom.PMMThinkCap))
+			}
+			if req.BenchCustom.PMMThinkDisabled != nil && *req.BenchCustom.PMMThinkDisabled {
+				overrides = append(overrides, "pmm.think_disabled=true")
+			}
+			if req.BenchCustom.PMMBlendAlpha != nil {
+				overrides = append(overrides, fmt.Sprintf("pmm.blend_alpha=%.2f", *req.BenchCustom.PMMBlendAlpha))
+			}
 		}
 		if len(overrides) > 0 {
 			log.Info("[req] param overrides: %s", strings.Join(overrides, ", "))

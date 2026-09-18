@@ -155,11 +155,16 @@ func (b *GatedDeltaNetBuilder) BuildCached(
 	convInput := ggml.Concat(ctx, convSt3d, qkvT, 0)
 
 	// Conv state writeback: copy new tail of convInput into cache (in-graph GPU copy).
-	newConvSt := ggml.View3D(ctx, convInput, dConv-1, cc, nSeqs,
-		convInput.Nb(1), convInput.Nb(2),
-		int(convInput.Ne(0)-(dConv-1))*convInput.ElementSize())
-	newConvStCont := ggml.Cont(ctx, newConvSt)
-	gf.BuildForwardExpand(ggml.Cpy(ctx, newConvStCont, cache.Tensors[CacheConvState]))
+	// Gated on WriteSSM: PMM shadow fork-variant passes set this false to read
+	// mainline conv_state without advancing it; persistent-variant sets true to
+	// capture the post-shadow state for the next decode token.
+	if inputs.WriteSSM {
+		newConvSt := ggml.View3D(ctx, convInput, dConv-1, cc, nSeqs,
+			convInput.Nb(1), convInput.Nb(2),
+			int(convInput.Ne(0)-(dConv-1))*convInput.ElementSize())
+		newConvStCont := ggml.Cont(ctx, newConvSt)
+		gf.BuildForwardExpand(ggml.Cpy(ctx, newConvStCont, cache.Tensors[CacheConvState]))
+	}
 
 	convOut := ggml.Silu(ctx, ggml.SSMConv(ctx, convInput, weights[WeightSSMConv1D]))
 
@@ -197,12 +202,15 @@ func (b *GatedDeltaNetBuilder) BuildCached(
 		ggml.RowSize(ggml.TypeF32, hvDim*dtRank*nNew), 0)
 
 	// SSM state writeback: copy updated state back to cache (in-graph GPU copy).
-	newSSMSt := ggml.View4D(ctx, deltaOut, hvDim, hvDim, dtRank, nSeqs,
-		ggml.RowSize(ggml.TypeF32, hvDim), ggml.RowSize(ggml.TypeF32, hvDim*hvDim),
-		ggml.RowSize(ggml.TypeF32, hvDim*hvDim*dtRank),
-		ggml.RowSize(ggml.TypeF32, hvDim*dtRank*nNew*nSeqs))
-	newSSMCont := ggml.Cont(ctx, newSSMSt)
-	gf.BuildForwardExpand(ggml.Cpy(ctx, newSSMCont, cache.Tensors[CacheSSMState]))
+	// Gated on WriteSSM (see conv state writeback above for rationale).
+	if inputs.WriteSSM {
+		newSSMSt := ggml.View4D(ctx, deltaOut, hvDim, hvDim, dtRank, nSeqs,
+			ggml.RowSize(ggml.TypeF32, hvDim), ggml.RowSize(ggml.TypeF32, hvDim*hvDim),
+			ggml.RowSize(ggml.TypeF32, hvDim*hvDim*dtRank),
+			ggml.RowSize(ggml.TypeF32, hvDim*dtRank*nNew*nSeqs))
+		newSSMCont := ggml.Cont(ctx, newSSMSt)
+		gf.BuildForwardExpand(ggml.Cpy(ctx, newSSMCont, cache.Tensors[CacheSSMState]))
+	}
 
 	// Gated normalization
 	z4d := ggml.Reshape4D(ctx, z, hvDim, dtRank, nNew, nSeqs)

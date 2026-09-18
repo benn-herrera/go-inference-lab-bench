@@ -107,8 +107,11 @@ func (b *FullAttentionGatedBuilder) BuildCached(
 	freqBase := params.Floats[ParamRoPEFreqBase]
 	q, kNew = applyRoPEMultiPair(ctx, q, kNew, inputs.InpPos, nRot, sections, freqBase, ropeMultiMode(config))
 
-	// KV cache writeback (in-graph GPU copy).
-	writeCacheKV(ctx, gf, kNew, vNew, cache, seqPos, nKVHeads)
+	// KV cache writeback (in-graph GPU copy). Gated on WriteKV: PMM shadow
+	// (Stream B) passes set this false to read mainline K/V without overwriting it.
+	if inputs.WriteKV {
+		writeCacheKV(ctx, gf, kNew, vNew, cache, seqPos, nKVHeads)
+	}
 
 	// For attention: prefill uses inline K/V, decode reads from cache
 	kAttn, vAttn := selectCachedKV(ctx, cache, seqPos, kNew, vNew, headDim, nKV, nKVHeads)

@@ -155,6 +155,19 @@ class State:
         self.LLAMA_DIFFUSION_NGL = env_str("LLAMA_DIFUSE_NGL", "99")
         self.LLAMA_DIFFUSION_UB = env_str("LLAMA_DIFUSE_UB", "512")
         self.FORCE_DIFFUSION_CLI = env_bool("FORCE_DIFFUSION_CLI", False)
+        self.USE_RLB_GEN = env_bool("USE_RLB_GEN", False)
+        self.RLB_PREFILL = env_bool("RLB_PREFILL", False)
+        self.RLB_ALPHA = env_str("RLB_ALPHA", "auto")
+        self.RLB_HALT_RULE = env_str("RLB_HALT_RULE", "")
+        self.RLB_TERMINAL_HALT_RULE = env_str("RLB_TERMINAL_HALT_RULE", "")
+        self.RLB_MAG_NORM = env_bool("RLB_MAG_NORM", False)
+
+        self.USE_PMM = env_bool("USE_PMM", False)
+        # PMM_THINK_CAP / PMM_BLEND_ALPHA: empty = use server default; otherwise
+        # a numeric string emitted into the payload as a number.
+        self.PMM_THINK_CAP = env_str("PMM_THINK_CAP", "")
+        self.PMM_THINK_DISABLED = env_bool("PMM_THINK_DISABLED", False)
+        self.PMM_BLEND_ALPHA = env_str("PMM_BLEND_ALPHA", "")
 
         self.DIFFUSION_ARCH_NAMES = scan_diffusion_arch_names()
 
@@ -867,6 +880,32 @@ def build_payload(state: State, msg: str, is_diffusion: bool) -> tuple[str, int 
             }
             max_tokens = _num(state.DIFFUSION_TOKENS, 128)
 
+        if state.USE_RLB_GEN:
+            bench_custom["use_rlb_gen"] = True
+            # Bash always emitted enable_rlb_on_prefill when USE_RLB_GEN=true
+            # (its `[[ -n ${RLB_PREFILL} ]]` is always true since the default
+            # 'false' is non-empty). Preserve that here.
+            bench_custom["enable_rlb_on_prefill"] = state.RLB_PREFILL
+            # -1.0 is the server-side sentinel for "auto" (per generate_rlb).
+            rlb_alpha = "-1.0" if state.RLB_ALPHA == "auto" else state.RLB_ALPHA
+            if rlb_alpha:
+                bench_custom["rlb_alpha"] = _num(rlb_alpha, 0)
+            if state.RLB_HALT_RULE:
+                bench_custom["rlb_halt_rule"] = state.RLB_HALT_RULE
+            if state.RLB_TERMINAL_HALT_RULE:
+                bench_custom["rlb_terminal_halt_rule"] = state.RLB_TERMINAL_HALT_RULE
+            if state.RLB_MAG_NORM:
+                bench_custom["rlb_magnitude_norm"] = True
+
+        if state.USE_PMM:
+            bench_custom["use_pmm"] = True
+            if state.PMM_THINK_CAP:
+                bench_custom["pmm_think_cap"] = _num(state.PMM_THINK_CAP, 0)
+            if state.PMM_THINK_DISABLED:
+                bench_custom["pmm_think_disabled"] = True
+            if state.PMM_BLEND_ALPHA:
+                bench_custom["pmm_blend_alpha"] = _num(state.PMM_BLEND_ALPHA, 1.0)
+
         if bench_custom:
             payload["bench_custom"] = bench_custom
 
@@ -1003,6 +1042,16 @@ def loop_help(state: State) -> None:
         /model [index]: show or set current model (currently: {state.MODEL})
         /new-server: shuts down old server and starts a new one.
         /prefer-st: toggle prefer safetensors mode (currently: {jbool(state.PREFER_ST)})
+        /rlb-alpha <0-1>|auto: set RLB SSM state alpha blending factor (currently: {state.RLB_ALPHA})
+        /rlb-gen: toggle RLB generation mode (currently: {jbool(state.USE_RLB_GEN)})
+        /rlb-halt-rule [name]: set RLB halt rule (currently: {state.RLB_HALT_RULE})
+        /rlb-mag-norm: toggle RLB magnitude normalization (currently: {jbool(state.RLB_MAG_NORM)})
+        /rlb-prefill: toggle RLB during prefill (currently: {jbool(state.RLB_PREFILL)})
+        /rlb-terminal-halt-rule [name|-]: set RLB halt rule for terminal block only; "-" to clear (currently: {state.RLB_TERMINAL_HALT_RULE or '<reuse halt-rule>'})
+        /pmm: toggle PMM two-stream decode mode (currently: {jbool(state.USE_PMM)})
+        /pmm-think-cap [n]: set PMM think-phase slab cap; empty to clear (currently: {state.PMM_THINK_CAP or '<default>'})
+        /pmm-think-disabled: toggle skipping Stream B during the think phase (currently: {jbool(state.PMM_THINK_DISABLED)})
+        /pmm-blend-alpha [α|-]: set shadow blend weight 0.0-1.0; "-" to clear/reset to 1.0 (currently: {state.PMM_BLEND_ALPHA or '<default=1.0>'})
         /stateless: toggle stateless mode (currently: {jbool(state.STATELESS)})
         /temperature [temperature]: show or set TEMPERATURE (currently: {state.TEMPERATURE})
         /think: toggle think mode (currently: {jbool(state.THINK)})
@@ -1143,6 +1192,83 @@ def loop_mode(state: State) -> None:
         if line.startswith("/temperature"):
             state.TEMPERATURE = cmd_set_nonneg_float(line, state.TEMPERATURE)
             print(f"TEMPERATURE={state.TEMPERATURE}")
+            continue
+        if line == "/rlb-gen":
+            state.USE_RLB_GEN = toggle(state.USE_RLB_GEN)
+            print(f"USE_RLB_GEN={jbool(state.USE_RLB_GEN)}")
+            continue
+        if line == "/rlb-prefill":
+            state.RLB_PREFILL = toggle(state.RLB_PREFILL)
+            print(f"RLB_PREFILL={jbool(state.RLB_PREFILL)}")
+            continue
+        if line.startswith("/rlb-alpha"):
+            _, args = loop_split(line)
+            ra = args[0] if args else ""
+            if ra == "auto":
+                state.RLB_ALPHA = ra
+            else:
+                try:
+                    f = float(ra) if ra else 1.0
+                    if 0.0 <= f <= 1.0:
+                        state.RLB_ALPHA = ra
+                except ValueError:
+                    pass
+            print(f"RLB_ALPHA={state.RLB_ALPHA}")
+            continue
+        if line.startswith("/rlb-terminal-halt-rule"):
+            _, args = loop_split(line)
+            thr = args[0] if args else ""
+            if thr == "":
+                pass
+            elif thr == "-":
+                state.RLB_TERMINAL_HALT_RULE = ""
+            else:
+                state.RLB_TERMINAL_HALT_RULE = thr
+            disp = state.RLB_TERMINAL_HALT_RULE or "<reuse halt-rule>"
+            print(f"RLB_TERMINAL_HALT_RULE={disp}")
+            continue
+        if line.startswith("/rlb-halt-rule"):
+            _, args = loop_split(line)
+            hr = args[0] if args else ""
+            if hr:
+                state.RLB_HALT_RULE = hr
+            print(f"RLB_HALT_RULE={state.RLB_HALT_RULE}")
+            continue
+        if line == "/rlb-mag-norm":
+            state.RLB_MAG_NORM = toggle(state.RLB_MAG_NORM)
+            print(f"RLB_MAG_NORM={jbool(state.RLB_MAG_NORM)}")
+            continue
+        if line == "/pmm-think-disabled":
+            state.PMM_THINK_DISABLED = toggle(state.PMM_THINK_DISABLED)
+            print(f"PMM_THINK_DISABLED={jbool(state.PMM_THINK_DISABLED)}")
+            continue
+        if line.startswith("/pmm-blend-alpha"):
+            _, args = loop_split(line)
+            pba = args[0] if args else ""
+            if pba == "":
+                pass  # no arg: just print current
+            elif pba == "-":
+                state.PMM_BLEND_ALPHA = ""  # clear → server default 1.0
+            else:
+                state.PMM_BLEND_ALPHA = pba
+            disp = state.PMM_BLEND_ALPHA or "<default=1.0>"
+            print(f"PMM_BLEND_ALPHA={disp}")
+            continue
+        if line.startswith("/pmm-think-cap"):
+            _, args = loop_split(line)
+            ptc = args[0] if args else ""
+            if ptc == "":
+                pass
+            elif ptc == "-":
+                state.PMM_THINK_CAP = ""
+            else:
+                state.PMM_THINK_CAP = ptc
+            disp = state.PMM_THINK_CAP or "<default>"
+            print(f"PMM_THINK_CAP={disp}")
+            continue
+        if line == "/pmm":
+            state.USE_PMM = toggle(state.USE_PMM)
+            print(f"USE_PMM={jbool(state.USE_PMM)}")
             continue
         if line in ("quit", "exit", "/quit", "/exit"):
             break

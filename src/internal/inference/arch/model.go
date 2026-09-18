@@ -41,6 +41,11 @@ type GenericModel struct {
 
 	// Pre-allocated scratch buffer for the hot decode path (ForwardCached).
 	logitBuf []float32 // reused by readLogitsInto each token
+
+	// rlb bundles all RLB-specific state (block ranges, lazy scratch
+	// context/scheduler). Defined in graph_rlb.go so RLB internals stay out
+	// of this file.
+	rlb rlbState
 }
 
 // NewGenericModelFromGGUF loads a GGUF model using the named architecture definition.
@@ -182,6 +187,7 @@ func (b *genericModelBuilder) cleanupOnError() {
 			b.m.cachedCtx.Free()
 			b.m.cachedCtx = nil
 		}
+		b.m.rlb.Free()
 	}
 	// Store owns gpu/cpu/weightCtx/weightBuf — its Close frees everything.
 	if b.store != nil {
@@ -597,6 +603,11 @@ func (b *genericModelBuilder) assignBuilders() error {
 		}
 	}
 
+	// Compute block boundaries for per-block RLB. InitBlockRanges is a no-op
+	// when full_attn_interval is absent or zero; the per-block driver then
+	// falls back to a single block covering all layers.
+	m.rlb.InitBlockRanges(nLayers, b.params.Ints[ParamFullAttnInterval])
+
 	blockCounts := make(map[string]int)
 	for _, name := range m.LayerBlockNames {
 		blockCounts[name]++
@@ -683,6 +694,7 @@ func (m *GenericModel) Close() {
 		m.cachedCtx.Free()
 		m.cachedCtx = nil
 	}
+	m.rlb.Free()
 	if m.Store != nil {
 		m.Store.Close()
 		m.Store = nil

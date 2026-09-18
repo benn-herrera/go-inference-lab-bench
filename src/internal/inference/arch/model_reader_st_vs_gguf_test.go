@@ -18,9 +18,9 @@ import (
 // Usage:
 //
 //	ST_VS_GGUF_MODEL=qwen35 \
-//	ST_VS_GGUF_ST_DIR=/Users/benn/projects/go-inference-lab-bench/models/Qwen3.5-9B.st \
-//	ST_VS_GGUF_GGUF=/Users/benn/projects/go-inference-lab-bench/models/Qwen3.5-9B.gguf.bin \
-//	ST_VS_GGUF_ARCH_DIR=/Users/benn/projects/go-inference-lab-bench/models/arch \
+//	ST_VS_GGUF_ST_DIR=/Users/benn/projects/inference-lab-bench/models/Qwen3.5-9B.st \
+//	ST_VS_GGUF_GGUF=/Users/benn/projects/inference-lab-bench/models/Qwen3.5-9B.gguf.bin \
+//	ST_VS_GGUF_ARCH_DIR=/Users/benn/projects/inference-lab-bench/models/arch \
 //	go test ./src/internal/inference/arch -run TestSafetensorsMatchesGGUF -v
 func TestSafetensorsMatchesGGUF(t *testing.T) {
 	archName := os.Getenv("ST_VS_GGUF_MODEL")

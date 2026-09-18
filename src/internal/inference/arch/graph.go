@@ -171,7 +171,7 @@ type blockFunc func(gctx *ggml.GraphContext, cur ggml.Tensor,
 //
 // Extension pattern: each optional per-layer behavior below is gated by a
 // weight- or param-presence check — NEVER by architecture name. This is the
-// data-driven invariant from AGENTS.md. The current set is:
+// data-driven invariant from CONVENTIONS.md. The current set is:
 //
 //   - attn_norm presence      → gates the attention/recurrent block + residual
 //   - attn_post_norm presence → post-attention norm (inside the block branch)
@@ -181,7 +181,7 @@ type blockFunc func(gctx *ggml.GraphContext, cur ggml.Tensor,
 // Before adding a 5th hook, consider replacing this implicit nil-check
 // extension mechanism with an explicit per-layer hook registry — at that
 // scale the readability cost of another nil-check outweighs the benefit of
-// inlining another feature. See AGENTS.md §"Phase 4: Extend graph.go".
+// inlining another feature. See CONVENTIONS.md §"Phase 4: Extend graph.go".
 func (m *GenericModel) runLayers(gctx *ggml.GraphContext, x ggml.Tensor,
 	inputs *GraphInputs, rmsEps float32,
 	blkFn blockFunc, perLayerEmbd ggml.Tensor) ggml.Tensor {
@@ -716,6 +716,10 @@ func (m *GenericModel) ForwardCached(gc *GenericCache, tokenIDs []int32, flashAt
 		SeqPos:     seqPos,
 		SharedKV:   &SharedKVState{K: make(map[string]ggml.Tensor), V: make(map[string]ggml.Tensor)},
 		FlashAttn:  effectiveFlashAttn,
+		// Vanilla / mainline cached forward writes both KV and SSM state.
+		// PMM shadow passes use a different entry point and disable these.
+		WriteKV:  true,
+		WriteSSM: true,
 	}
 
 	// Per-layer embedding preparation

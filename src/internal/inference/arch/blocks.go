@@ -88,6 +88,17 @@ type SharedKVState struct {
 }
 
 // GraphInputs holds shared input tensors for the forward pass.
+//
+// WriteKV / WriteSSM contract: every BlockBuilder.BuildCached implementation that
+// emits a cache writeback (K/V tensor cpy or SSM state cpy) MUST gate the
+// writeback on the corresponding flag. Vanilla / mainline passes set both to
+// true; PMM (Poor Man's Mythos) shadow passes set them to false (fork variant)
+// or selectively (persistent variant captures SSM via WriteSSM=true). Cache
+// READS are not gated — only writes — because shadow passes read the mainline
+// state and must be free to do so without snapshot/restore plumbing in the
+// graph builders. Defaults are false; ForwardCached and the RLB layer dispatch
+// must set both explicitly. Missing a write-gate breaks PMM silently;
+// TestKVCacheWritePassMatchesVanillaForward is the canary.
 type GraphInputs struct {
 	InpPos       ggml.Tensor
 	InpMask      ggml.Tensor
@@ -99,6 +110,13 @@ type GraphInputs struct {
 	SharedKV     *SharedKVState
 	CurrentLayer int  // set by runLayers before calling the block builder
 	FlashAttn    bool // use ggml_flash_attn_ext instead of explicit KQ+softmax+V matmul
+	// WriteKV controls whether attention layers write K/V to the persistent cache.
+	// Must be true for all vanilla/mainline passes; false for shadow (Stream B) passes.
+	// Every BlockBuilder.BuildCached that emits KV writes MUST gate the write on this flag.
+	WriteKV bool
+	// WriteSSM controls whether SSM layers write conv_state/ssm_state back to cache.
+	// False for fork-variant shadow passes; true for persistent-variant (capture needed).
+	WriteSSM bool
 	// PosX / PosY are per-token X/Y grid positions for axial (2D) RoPE
 	// (rope="axial2d"). Nil for every decoder path — only a 2D-positional
 	// tower (e.g. a ViT encoder) supplies them.

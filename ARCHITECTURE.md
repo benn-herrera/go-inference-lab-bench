@@ -1,16 +1,12 @@
-# Architecture — go-inference-lab-bench
+# ARCHITECTURE — Inference Lab Bench
 
-Companion to `AGENTS.md`: codebase structure, data flows, and invariants.
+Companion to `CONVENTIONS.md`: codebase structure, data flows, and invariants.
 
 ---
 
 ## Central Invariants
 
-**Zero model-specific Go code.** Every supported architecture is fully described by
-`models/arch/<name>.arch.toml`. No Go code mentions "llama", "qwen", "deepseek" by name
-except inside arch TOML files and tests. Adding a new model that uses existing block
-builders requires only a new `.arch.toml`. Writing `if arch == "qwen35"` in Go is the
-worst category of mistake in this codebase — that logic belongs in the TOML DSL.
+**Zero model-specific Go code.** See SPEC.md §"Architecture Definition Contract" — the requirement and its rationale live there.
 
 **Zero magic hard-coded values** - any string or number that must agree in multiple places must be defined as a constant and referenced only via the constant name. Renaming a map key or DSL file format symbol must be doable via a single edit of a value rather than a global search and replace.
 
@@ -50,24 +46,22 @@ inference/engine.go (Generate())
 ## Package Map
 
 ### `bench/` — CLI entry point
-Thin cobra command wrappers delegating to `internal/`. `serve-api`, `chat` expose `--log`/`--log-level` flags; batch commands (`gen-arch-diagram`) use default INFO-to-stderr logger.
+Thin cobra command wrappers delegating to `internal/`. `serve-api` exposes `--log`/`--log-level` flags; batch commands (`gen-arch-diagram`) use default INFO-to-stderr logger.
 
 ### `internal/log/` — structured logging (leaf package)
 Zero-external-dependency. Imports stdlib only — no project package may be imported by it. See **Logging** section.
 
-### `internal/config/`
-Loads `config/api_config.toml` into `Config`: `[server]`, `[models]`, `[inference]` subsections. Per-request JSON fields override server defaults for `enable_thinking`, `elide_thinking`.
+### `internal/model/` — model discovery
+Two-pass directory scan: `*.gguf` glob first, then `*.st/` enumeration via `os.ReadDir`. Architectures with no matching `.arch.toml` are filtered out. `ModelFormat` (`FormatGGUF` / `FormatSafetensors`) is carried on `ModelInfo.Format`; `List()` rescans for new files and `.st/` dirs on each call; `Get()` / `tryLoadOne()` checks `.gguf` before falling back to `.st/`.
 
-### `internal/model/`
-- `manager.go` — `ModelManager`: two-pass directory scan — `*.gguf` glob first, then `*.st/` directory enumeration via `os.ReadDir`; `ModelFormat` type (`FormatGGUF` / `FormatSafetensors`); `ModelInfo.Format` field; `List()` rescans for new files and `.st/` dirs; `Get()`/`tryLoadOne()` checks `.gguf` before falling back to `.st/`; filters architectures without matching `.arch.toml`
-- `gguf.go` — GGUF header scanning → `GGUFMetadata`
-- `safetensors.go` — `ParseSafetensorsDir()`: reads safetensors index for tensor inventory, `config.json` for architecture class and numeric params, resolves architecture via `arch.FindSTMapByHFClass()`; returns "unknown" architecture and zeroed numeric fields if `config.json` is absent; corrupt `config.json` logs debug warning and continues with partial data
+Safetensors discovery reads the index for tensor inventory and `config.json` for architecture class and numeric params, resolving the architecture via `arch.FindSTMapByHFClass()`. A missing `config.json` yields "unknown" architecture and zeroed numeric fields; a corrupt one logs a debug warning and continues with partial data.
 
-### `internal/apiserver/`
-- `server.go` — `Server` holds `engines` map (`modelName → *inference.Engine`) guarded by `enginesMu sync.Mutex`, `httpServer`, `pending` WaitGroup, and an injected `util.BenchPaths`. The mutex is held while looking up, evicting, or creating an engine — single-client R&D, but the lock keeps the eviction/creation race honest. `NewServer(paths, cfg, manager)` takes `BenchPaths` from the cobra entry point — `apiserver` never calls `util.ResolvePaths()` itself.
-- `completions.go` — POST `/api/v1/chat/completions`. Per-request overrides, SSE streaming, logprobs, timing/throughput in `usage` response.
-- `models.go` — GET `/api/v1/models`.
-- `ctl.go` — GET `/ctl/` (`?memstats`, `?quit`, `?quit&now`).
+### `internal/apiserver/` — HTTP surface
+Handlers for the API, control, and diagnostic endpoints, plus config loading — there is no separate `internal/config/` package.
+
+`Server` holds an `engines` map (`modelName → *inference.Engine`) guarded by `enginesMu sync.Mutex`, alongside `httpServer`, a `pending` WaitGroup, and an injected `util.BenchPaths`. The mutex is held while looking up, evicting, or creating an engine — single-client R&D, but the lock keeps the eviction/creation race honest. `NewServer(paths, cfg, manager)` takes `BenchPaths` from the cobra entry point — `apiserver` never calls `util.ResolvePaths()` itself.
+
+Endpoint and payload contracts: SPEC.md §"HTTP API". Config keys, defaults, and per-request override precedence: SPEC.md §"Configuration Contract".
 
 ### `internal/inference/engine.go`
 
@@ -152,11 +146,11 @@ An `*.arch.toml` file maps directly onto `arch.ArchDef`:
 given cache entry share one physical cache tensor (allocated on the first layer in the
 group). Used for TOML-declared sharing; see also param-driven sharing via `n_kv_shared_layers`.
 
-**`ArchMeta` flags:**
-- `EmbedScale` (`embed_scale`) — when true, input token embeddings are multiplied by `sqrt(n_embd)` before the layer loop.
-- `NonCausal` (`non_causal`) — when true, attention uses a zero mask (all positions attend to all positions) instead of a causal lower-triangular mask. Required for diffusion models.
-- `Generation` (`generation`) — `""` (default, autoregressive) or `"diffusion"`. Controls which generation path `Engine.Generate()` dispatches to via `IsDiffusion()`. Setting `generation = "diffusion"` without `non_causal = true` is a validation error.
-- `ShiftLogits` (`shift_logits`) — diffusion only: output position `p` reads logits at index `p-1` rather than `p`. Required for models whose output tensor is offset by one position relative to the input.
+**`ArchMeta` flags:** `EmbedScale` (`embed_scale`), `NonCausal` (`non_causal`),
+`Generation` (`generation`), `ShiftLogits` (`shift_logits`) — effects and
+parse-time validation rules: SPEC.md §"Architecture Definition Contract".
+`Generation` selects the generation path `Engine.Generate()` dispatches to
+via `IsDiffusion()`.
 
 **Expressions:** `@{layer_idx}` = engine builtin; `${param}` = resolved GGUF param;
 bare names = derived param refs; `tensor.ne[dim]` = tensor shape. Full spec including
@@ -444,13 +438,6 @@ Data collection and KV-cache optimization must not be entangled. Any research qu
 answerable via a stateless pass should use that path. Do not add capture to
 `ForwardCached` without explicit research into cached-mode mechanics as a dedicated goal.
 
-
-### `diagnostic.go` — post-generation analysis
-
-Contains runners that execute additional forward passes after generation and populate
-`InferenceMetrics.Diagnostic`. Triggered conditionally from `engine.Generate()`.
-Add new analysis routines here rather than to `engine.go`.
-
 ---
 
 ## CGo Layer (`internal/ggml/`)
@@ -459,7 +446,7 @@ All CGo is confined here. `ggml_lib/` is a thin C wrapper over ggml ops — no m
 logic, no C++.
 
 **Type and signature conventions** (enforced as the API for every Go caller):
-- `ggml.GGMLType` — named integer type for tensor element types (e.g. `TypeF32`, `TypeQ4_K`). Distinct from `int` so that tensor type arguments cannot be silently swapped with unrelated ints (ne dimensions, mode flags, etc.).
+- `ggml.GGMLType` — named integer type for tensor element types (e.g. `TypeF32`, `TypeQ4_K`). Distinct from `int` so that tensor type arguments cannot be silently swapped with unrelated ints. The neighbouring types it must not be confused with: ne dimensions are `int64`, mode flags are `int`.
 - `ggml.AllocPerm` — named type controlling whether a `GraphContext` arena holds tensor *data* (`AllocPermAllow`) or only tensor *descriptors* (`AllocPermDisallow`, the normal graph-build case). `NewGraphContext(memSize int, allocPerm AllocPerm)` is non-variadic — every caller must declare its intent explicitly. There is no `AllocPermDefault`.
 - `opt*` parameter prefix — nullable tensor parameters in op wrappers use the `opt` prefix to flag that callers may pass `NilTensor()` (e.g. `SoftMaxExt(ctx, a, optMask, ...)`, `RopeExt(ctx, a, pos, optFreqFactors, ...)`, `FlashAttnExt(ctx, q, k, v, optMask, ...)`). Required tensor parameters have no prefix.
 
@@ -544,7 +531,7 @@ I32 pass-through, Q4_K well-formed block passes, Q4_K F16 NaN d-scale fails.
 
 **Logit validation (sample time, `inference/sampler.go`)**  
 `ValidateLogits` runs at every sampler chokepoint. Autoregressive paths
-(`generate_cached`, `generate_stateless`) hit it transitively
+(`generate_cached`, `generate_stateless`, `generate_rlb`) hit it transitively
 via `Engine.sample()` in `engine.go`, which validates before any sampling
 math. The diffusion path (`generate_diffusion`) calls it explicitly after
 each `ForwardStatelessAllLogits`, wrapped with `blockNum` / `step` context.
@@ -573,7 +560,7 @@ considered complete.
 
 ## Logging
 
-See **Internal Logging** section in `AGENTS.md` — authoritative for format, initialization, CLI flags, ggml routing, and constraints. Summary: `internal/log` package, `<HH:MM:SS>[LEVEL]` format, dual stderr/file output, `ggml.InitLogging()` routes C library output. Dependency leaf — imports stdlib only.
+See **Internal Logging** section in `CONVENTIONS.md` — authoritative for format, initialization, CLI flags, ggml routing, and constraints. Summary: `internal/log` package, `<HH:MM:SS>[LEVEL]` format, dual stderr/file output, `ggml.InitLogging()` routes C library output. Dependency leaf — imports stdlib only.
 
 ---
 
@@ -607,19 +594,10 @@ interface so that inference code is identical above the abstraction boundary.
 
 ### Directory Convention
 
-```
-models/
-  Llama-3.2-3B-Instruct.Q4_K_M.gguf          ← GGUF model
-  Llama-3.2-3B-Instruct.st/                   ← safetensors directory (.st suffix)
-    model-00001-of-00002.safetensors          ← shard file(s)
-    model.safetensors.index.json              ← JSON index (weight → shard mapping)
-    config.json                               ← HF model config
-    tokenizer.gguf                            ← tokenizer sidecar (vocab only, no weights)
-```
-
-Format is auto-detected: `*.gguf` → GGUF parser; `*.st/` → safetensors directory.
-`ModelInfo.Format` (`FormatGGUF` / `FormatSafetensors`) carries the result into
-`NewEngine()`.
+Required `.st/` directory layout and the tokenizer sidecar requirement:
+SPEC.md §"Model Format Contract". Implementation wiring: format detection
+happens at discovery time in `internal/model`; `ModelInfo.Format`
+(`FormatGGUF` / `FormatSafetensors`) carries the result into `NewEngine()`.
 
 ### Index Parsing (`safetensors_index.go`)
 
@@ -745,23 +723,24 @@ The manager (`manager.go`) scans both `*.gguf` files and `*.st/` directories dur
 Multimodal models (Gemma 4, Qwen3.5-VL) carry a second encoder tower alongside
 the text decoder. The encoder runs as a separate forward graph per image, and its
 projected output embeddings are spliced into the decoder's input stream before the
-layer loop. All vision-specific files are under `internal/inference/arch/` and
-`internal/inference/`, with one entry-point in the `archdiagram/` package.
+layer loop.
 
-### Source Map
+### Where the code lives
 
-| File | Contents |
-|---|---|
-| `arch/vision.go` | `ResolveVisionWeights`, `BuildVisionTensors`, `ResolveVisionParams`, `ResolveVisionBuilders`; the encoder forward graph entry point `BuildVisionGraph` and its helpers: `buildPatchEmbed`, `buildPositionEmbed`, `buildProjector`, `splitFusedQKV`, `visionNormApply`, `visionPostNorm`, `mulMatClamped` |
-| `arch/vision_rope.go` | `VisionMRopePositions` — 4-channel M-RoPE position buffer for Qwen3-VL towers |
-| `arch/vision_splice.go` | `buildVisionSplice`, `visionDecoderSpans`, `VisionMaskSpans`, `RewriteTokenIDsForVision` — the image→embedding→SetRows splice seam and the decoder image-token causal mask |
-| `arch/vision_preproc.go` | `PreprocConfigFromArchDef`, `PreprocessImage`, `smartResize`, `resizeBilinearLlama`, `packPixelsF32` — image preprocessing: aspect-fit, PAD_CEIL, align-corners bilinear resize, patch position arrays |
-| `arch/vision_clamp.go` | `LoadVisionClampsFromReader`, `LinearClamp`, `VisionClamps` — Gemma 4 `Gemma4ClippableLinear` clamp scalars read through the `ModelReader` boundary |
-| `arch/model_reader_safetensors_derived.go` | `handleConv3DTemporalSplit` — dispatched separately by `buildDerivedTensors` in `model_reader_safetensors.go`; the only derived-tensor op that reads source shard data rather than just `config.json` |
-| `inference/vision_prefill.go` | `prepareVisionPrefill`, `expandImagePlaceholders` — preprocesses attached images, expands single-token `<|image|>` placeholders to N-token runs; produces the `VisionPrefill` the forward paths consume |
-| `archdiagram/vision_diagram.go` | `RenderVisionDiagram` — overview SVG |
-| `archdiagram/vision_layers_diagram.go` | `RenderVisionLayersDiagram` — fully-exploded per-layer SVG |
-| `src/cmd/gen_arch_diagram.go` | Wires vision SVG emission: when `def.Vision != nil`, emits `<name>.vision.svg`; when `def.Example.VisionNLayers > 0`, also emits `<name>.vision.layers.svg` |
+Vision code follows the `vision_*.go` naming convention within its package.
+`internal/inference/arch/` holds everything model-side — weight/param resolution
+and the encoder graph entry point `BuildVisionGraph` in `vision.go`, plus M-RoPE
+position buffers, the splice seam, image preprocessing, and the Gemma 4
+clamp-scalar loader in their respective `vision_*.go` files. `internal/inference/`
+holds the request-side half: `<|image|>` placeholder expansion, producing the
+`VisionPrefill` the forward paths consume. `archdiagram/` holds the two SVG
+renderers, wired for emission from the `gen-arch-diagram` command.
+
+One placement is not guessable from naming: `handleConv3DTemporalSplit` lives in
+`model_reader_safetensors_derived.go` but is **not** in the `derivedTensorOps`
+registry — `buildDerivedTensors` dispatches it separately because it reads
+source shard data rather than just `config.json`, which the registry's handler
+signature cannot express. See "Construction Across Two Formats" below.
 
 **TOML examples:** `models/arch/gemma4.arch.toml` and `qwen35.arch.toml`, `[vision]`
 / `[projector]` sections. `models/arch/qwen35.arch.stmap.toml` carries the
@@ -900,10 +879,9 @@ has `def.Vision != nil`; the exploded per-layer diagram is emitted when
 ### Equivalence Testing and Fidelity
 
 Vision correctness is gated by `test_vision_equiv.sh` (two modes: `llama` —
-bench GGUF vs. llama-server; `gguf-st` — bench safetensors vs. bench GGUF). See
-**`test_vision_equiv.sh`** in `AGENTS.md` for the full protocol, threshold
-rationale (`VISION_PASS_THRESH` default 0.0075), and the reference-build
-sensitivity explanation.
+bench GGUF vs. llama-server; `gguf-st` — bench safetensors vs. bench GGUF).
+Threshold, full protocol, and the reference-build sensitivity behind that
+threshold: **`test_vision_equiv.sh`** in `CONVENTIONS.md`.
 
 For diagnosing suspected encoder or preprocessing divergence, the logprob gate
 is insufficient — an 18% projected-embedding error was shown to move logprobs
@@ -917,23 +895,23 @@ checkpoint-diff catches algorithmic or norm-order errors.
 
 ## Key Invariants
 
-1. **No model-specific Go code.** Architecture branches belong in TOML.
+1. **No model-specific Go code.** SPEC.md §"Architecture Definition Contract".
 2. **`ModuleMap` is structural-only.** Built once from resolved weights in `BuildModuleMap`; consumed by `gen-arch-diagram`. Never mutated post-construction.
 3. **NilTensor means absent.** Optional weights not present in the model return zero-value `ggml.Tensor`. Every builder checks `IsNil()`.
-4. **`os.Exit` never below CLI entry point.** Return errors up the chain. `log.Fatal` is permitted only in `bench/` cobra entry points; utility and library packages (including `util/paths.go`) return errors. `util.ResolvePaths()` returns `(BenchPaths, error)`; `BenchPaths` is injected from the cobra entry into `Server` and `Engine` — no library code calls `ResolvePaths` itself.
-5. **CGo stays in `ggml/`.** No other package imports `"C"`. GGUF metadata is read via pure-Go `gguf-parser-go`; safetensors index and tensor data are parsed in pure Go.
+4. **`os.Exit` / `log.Fatal` placement.** SPEC.md §"System Invariants". Wiring fact: `util.ResolvePaths()` returns `(BenchPaths, error)`; `BenchPaths` is injected from the cobra entry into `Server` and `Engine` — no library code calls `ResolvePaths` itself.
+5. **CGo confinement.** SPEC.md §"System Invariants". GGUF metadata is read via pure-Go `gguf-parser-go`; safetensors index and tensor data are parsed in pure Go.
 6. **Builder contracts enforced at parse time.** Adding a required weight to `Contract()` requires updating all `.arch.toml` files using that builder.
 7. **Palette is single-source.** All diagram colors from `diagramPalette()`.
-8. **TOML is the data language.** JSON only for OpenAI-compatible API payloads.
+8. **TOML is the data language.** SPEC.md §"Architecture Definition Contract".
 9. **`internal/log` is a dependency leaf.** Imports stdlib only.
-10. **Utility placement:** project-wide → `util/project_util.go`; package-internal → `<pkg>/<pkg>_util.go`; single-file → same file.
+10. **Utility placement:** project-wide → `src/internal/util/project_util.go`; package-internal, multi-file → `src/internal/<pkg>/<pkg>_util.go`; single-file → define in that file.
 11. **Test with all models.** Llama is easy; Qwen3.5, Qwen3.5-MoE, DeepSeek2, Gemma4 edge-case.
 12. **Arch editor: TOML is canonical, palette/builders dynamic.** No hardcoded colors/names in JS.
-13. **Data capture is stateless-only.** `ForwardCaptures` on `ForwardStateless` only.
+13. **Data capture is stateless-only.** SPEC.md §"System Invariants".
 14. **Template owns thinking mode.** `enable_thinking` passed to gonja template. No post-render manipulation.
 15. **SharedKV ordering validated at parse time.** `shared_kv_group` with no `attn_k` producer is a validation error.
-16. **`ModelReader` is the format boundary.** Everything above `newGenericModelFromReader()` is format-agnostic. Adding a new model format requires only a new `ModelReader` implementation.
-17. **Tokenizer is GGUF-only.** Safetensors models use a `tokenizer.gguf` sidecar; no HuggingFace `tokenizer.json` parsing path exists.
+16. **`ModelReader` is the format boundary.** SPEC.md §"System Invariants". Everything above `newGenericModelFromReader()` is format-agnostic — this is why Model Loading below is described once, not per-format.
+17. **Tokenizer is GGUF-only.** SPEC.md §"Model Format Contract".
 18. **`NewGraphContext` requires explicit `AllocPerm`.** No default. Graph-build contexts pass `AllocPermDisallow`; data-arena scratch contexts (load-time type conversion) pass `AllocPermAllow`. Caller intent must be visible at the call site.
 19. **Single source of truth for the cgraph node budget.** `arch.maxGraphNodes = 16384` drives both the context arena (via `arch.graphCtxSize()` → `ggml.GraphContextSize`) and every `NewGraph` / `NewSched` call in the arch package. Never use a literal node count.
 20. **Canonical logical weight names live in `arch_util.go`.** `WeightAttnNorm`, `WeightFFNNorm` (and the `Cache*` keys) are constants; never inline these literal strings in graph or module code.
@@ -957,17 +935,7 @@ type InferenceMetrics struct {
 
 Throughput methods: `TokensPerSec()` (decode), `PrefillTokensPerSec()`, `TotalTokensPerSec()`. All return 0 when denominator ≤ 0.
 
-Non-streaming response `usage` object (all timing fields `omitempty`):
-```json
-{
-  "usage": {
-    "prompt_tokens": 12, "completion_tokens": 48, "total_tokens": 60,
-    "prompt_tokens_per_sec": 240.5, "completion_tokens_per_sec": 35.2, "total_tokens_per_sec": 42.1,
-    "prefill_seconds": 0.049, "decode_seconds": 1.374, "total_seconds": 1.423
-  }
-}
-```
-Streaming responses do not include usage (OpenAI convention — use `stream_options.include_usage` if supported).
+Wire-level `usage` object shape and streaming inclusion rules: SPEC.md §"HTTP API".
 
 ---
 
@@ -991,12 +959,11 @@ default base64 encoding — matches the OpenAI/llama.cpp response format.
 
 ### Equivalence Testing
 
-`test_chat_equiv.sh` sends identical prompts to bench and `llama-server` (Homebrew),
-compares top-1 logprobs. All models match within GPU floating-point variance (~0.1%
-relative error on logprobs). Validates: tokenization, chat template rendering, forward
-pass correctness, and sampling.
+Gate modes and the pass threshold: CONVENTIONS.md §"Validating Changes".
+Validates: tokenization, chat template rendering, forward pass correctness,
+and sampling.
 
-`test_chat_equiv.sh` invokes the harness via `bash test_inference.sh`,
+`test_chat_equiv.sh` and `test_rlb.sh` invoke the harness via `bash test_inference.sh`,
 which is a thin launcher over `tools/test_inference.py` — a stdlib-only Python
 program that owns SSE streaming, payload construction, server lifecycle,
 loop-mode REPL, and the logprob fingerprint line that `test_chat_equiv.sh` greps

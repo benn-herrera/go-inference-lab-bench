@@ -7,8 +7,8 @@ GH_ROOT := $(shell dirname $$(git remote -v | awk '{print $$2; exit 0;}'))
 
 all: build
 
-AGENTS_REPO := https://github.com/ave-veritas-et-enodatio/adjagent.git
-AGENTS_DIR := .claude-temp/$(basename $(notdir $(AGENTS_REPO)))
+AGENTS_REPO := https://github.com/benn-herrera/adjagent.git
+AGENTS_DIR := .claude/$(basename $(notdir $(AGENTS_REPO)))
 agents:
 	@mkdir -p $(dir $(AGENTS_DIR))
 	@[[ -d "$(AGENTS_DIR)" ]] && git -C "$(AGENTS_DIR)" pull || git -C "$(dir $(AGENTS_DIR))" clone $(AGENTS_REPO)
@@ -52,7 +52,7 @@ arch-diagrams: build
 	@$(MAKE) -B arch-diagram-targets
 
 update-attributions:
-	claude -p "read AGENTS.md and ARCHITECTURE.md, then read the direct imports section of src/go.mod and update 'Third Party Acknowledgements' at the end of README.md" \
+	claude -p "read CONVENTIONS.md and ARCHITECTURE.md, then read the direct imports section of src/go.mod and update 'Third Party Acknowledgements' at the end of README.md" \
 	      --allowedTools "Read,Edit,Write,Glob,Grep" \
 				--model sonnet
 

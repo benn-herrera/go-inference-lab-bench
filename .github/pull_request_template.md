@@ -1,8 +1,8 @@
 # Major Topic Here
 
 ## Issues 
-* [Issue Title](https://github.com/ave-veritas-et-enodatio/go-inference-lab-bench/issues)
-* [Issue Title](https://github.com/ave-veritas-et-enodatio/go-inference-lab-bench/issues)
+* [Issue Title](https://github.com/benn-herrera/go-inference-lab-bench/issues)
+* [Issue Title](https://github.com/benn-herrera/go-inference-lab-bench/issues)
 
 ## Change Notes
 
@@ -21,7 +21,7 @@ If > 0 describe validation
 [ ] Issue linked
 [ ] AI coding usage declared
 [ ] Changes have test coverage
-[ ] AGENTS.md and ARCHITECTURE.md updated
+[ ] CONVENTIONS.md and ARCHITECTURE.md updated
 [ ] ```make test``` passes (go unit tests)
 [ ] ```make integration-test``` passes (inference end-to-end test)
 [ ] ```make equiv-test``` passes (llama-server reference equivalence)

@@ -154,12 +154,15 @@ func (b *MLAAttentionBuilder) BuildCached(
 	kNew := ggml.Concat(ctx, kvCompressed3d, kPeNew, 0) // [kDim, 1, nNew]
 
 	// Cache writeback: K only (MLA: V derived from K's compressed portion).
-	// Emit in-graph cpy into the cache buffer at seqPos.
+	// Emit in-graph cpy into the cache buffer at seqPos. Gated on WriteKV:
+	// PMM shadow (Stream B) passes set this false to read mainline K without overwriting.
 	kc := cache.Tensors[CacheK]
-	kForCache := ggml.Cont(ctx, ggml.Permute(ctx, kNew, 0, 2, 1, 3)) // [kDim, nNew, 1]
-	const float32Size = 4
-	kView := ggml.View3D(ctx, kc, kDim, nNew, int64(1), kc.Nb(1), kc.Nb(2), seqPos*int(kDim)*float32Size)
-	gf.BuildForwardExpand(ggml.Cpy(ctx, kForCache, kView))
+	if inputs.WriteKV {
+		kForCache := ggml.Cont(ctx, ggml.Permute(ctx, kNew, 0, 2, 1, 3)) // [kDim, nNew, 1]
+		const float32Size = 4
+		kView := ggml.View3D(ctx, kc, kDim, nNew, int64(1), kc.Nb(1), kc.Nb(2), seqPos*int(kDim)*float32Size)
+		gf.BuildForwardExpand(ggml.Cpy(ctx, kForCache, kView))
+	}
 
 	// For attention: build K and V from cache or inline
 	var kAttn, vAttn ggml.Tensor

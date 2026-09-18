@@ -11,9 +11,9 @@
 #   SKIP_BENCH         skip bench side (llama mode only)
 #   SKIP_LLAMA         skip llama-server side (llama mode only)
 #   LOG_DIR            log directory (default: bin/test_vision_equiv_logs)
-#   VISION_PASS_THRESH max |check_lp - ref_lp| before logprob FAIL (default: 0.0075; see AGENTS.md)
+#   VISION_PASS_THRESH max |check_lp - ref_lp| before logprob FAIL (default: 0.0075; see CONVENTIONS.md)
 #
-# See AGENTS.md (section "test_vision_equiv.sh") for prompt requirements, the
+# See CONVENTIONS.md (section "test_vision_equiv.sh") for prompt requirements, the
 # threshold/F16-floor rationale, and the prompt-framing findings.
 
 set -ou pipefail
@@ -41,16 +41,16 @@ run_dir="${LOG_DIR}"
 mkdir -p "${run_dir}"
 
 # Single-token-answer prompts only (two cats: blue-striped tie right, green-striped tie left,
-# color photograph). Free-form prose and "which side is darker" are excluded — see AGENTS.md.
+# color photograph). Free-form prose and "which side is darker" are excluded — see CONVENTIONS.md.
 #
 # IMAGE-FIRST (required): image marker leads every prompt so both engines process the image
 # through KV cache before question text. Mid-sentence image gives bench and llama different
-# causal layouts — a real layout difference, not FP. See AGENTS.md for the full story.
+# causal layouts — a real layout difference, not FP. See CONVENTIONS.md for the full story.
 #
 # FORMAT-UNAMBIGUOUS (required): avoid phrasings that split mass over formatting alternatives
 # (e.g. "left or right" forces a lowercase competitor against natural "Right" → 0.0186 delta,
 # vs 0.0019 without). Effect scales with model depth; deeper models amplify it hard (gemma-31B
-# color 0.20 → 0.00000 once pinned). See AGENTS.md for the three-instance record.
+# color 0.20 → 0.00000 once pinned). See CONVENTIONS.md for the three-instance record.
 # UPSHOT: the prompts *are* tuned a bit to reduce this but it is less cheating
 # and more acknowledging the pragmatics of keeping two *very*
 # complex sets of mathematical operations in sync.
@@ -95,7 +95,7 @@ export TOP_LOGPROBS="${TOP_LOGPROBS:-1}"
 # logprobs ~0.001 even when no vision/Metal op changed (measured: brew 9410->9430
 # moved Qwen subject/color from <0.004 to ~0.0057/0.0043 with bench byte-identical
 # and the reference's Qwen vision code unchanged). 0.004 sat below that floor and
-# was not robustly reproducible across reference rebuilds. See AGENTS.md.
+# was not robustly reproducible across reference rebuilds. See CONVENTIONS.md.
 VISION_PASS_THRESH="${VISION_PASS_THRESH:-0.0075}"
 
 # Server log file. test_inference.py launches `bench serve-api --log "${LOG}"`,

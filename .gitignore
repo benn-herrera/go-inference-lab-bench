@@ -28,12 +28,12 @@ nohup.out
 .claude/session-state.md
 # agent set might create a temp worktree
 .claude/worktrees/
-.claude-temp/
 
 # makefile pulls shared agents from repo
 .claude/agents/
 .claude/commands/
 .claude/adjagent/
+.claude-temp/
 
 src/third_party/ggml/
 memory/session-state.md

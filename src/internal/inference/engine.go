@@ -285,6 +285,8 @@ type GenerateParams struct {
 	TopLogProbs        int              // number of top log-probabilities per token (0 = just the chosen token)
 	FlashAttention     *bool            // nil = use server default; true/false = per-request override
 	Diffusion          *DiffusionParams // nil = not diffusion (ignored for autoregressive models)
+	RLB                *RLBParams       // nil = RLB disabled; non-nil = run recurrent logic block generation with these params
+	PMM                *PMMParams       // nil = PMM disabled; non-nil = run two-stream decode with these params
 
 	// Images is the flat ordered list of decoded images attached to this
 	// request, in template-render order. The Phase 7 splice in
@@ -345,10 +347,16 @@ func (e *Engine) Generate(
 	var visionSpliceInputs []arch.VisionSpliceInput
 	if len(params.Images) > 0 {
 		// v1 limitation: vision is only wired into the vanilla cached /
-		// stateless paths. Mixing with diffusion is rejected with a clean
-		// error rather than silently producing gibberish.
+		// stateless paths. Mixing with diffusion / RLB / PMM is rejected
+		// with a clean error rather than silently producing gibberish.
 		if e.IsDiffusion() {
 			return nil, fmt.Errorf("vision input + diffusion generation is not supported")
+		}
+		if params.RLB != nil {
+			return nil, fmt.Errorf("vision input + RLB generation is not supported")
+		}
+		if params.PMM != nil {
+			return nil, fmt.Errorf("vision input + PMM generation is not supported")
 		}
 		if e.model.Def.Vision == nil {
 			return nil, fmt.Errorf("request attached %d image(s) but model %q has no vision tower",
@@ -396,8 +404,42 @@ func (e *Engine) Generate(
 
 	start := time.Now()
 
+	// RLB doesn't apply to diffusion models (no SSM state to blend, no
+	// per-block recurrence concept). If both are requested, drop RLB and
+	// fall through to the diffusion path.
+	if params.RLB != nil && e.IsDiffusion() {
+		log.Warn("rlb_gen requested on diffusion model; ignoring RLB, performing diffusion generation")
+		params.RLB = nil
+	}
+
+	// PMM is decode-only autoregressive. It is incompatible with diffusion
+	// (no autoregressive decode loop), with stateless (PMM relies on the
+	// persistent K/V cache), and takes precedence over RLB if both are set.
+	if params.PMM != nil {
+		if e.IsDiffusion() {
+			log.Warn("pmm requested on diffusion model; ignoring PMM, performing diffusion generation")
+			params.PMM = nil
+		} else if params.Stateless {
+			log.Warn("pmm requires cached mode; ignoring stateless=true")
+			params.Stateless = false
+		}
+	}
+	if params.PMM != nil && params.RLB != nil {
+		log.Warn("pmm: RLB also set; PMM takes precedence, RLB ignored")
+		params.RLB = nil
+	}
+
 	var genErr error
-	if e.IsDiffusion() {
+	if params.PMM != nil {
+		log.Info("pmm generation: prompt=%d tokens", len(promptIDs))
+		genErr = e.generatePMM(promptIDs, maxTokens, stopSet, params, onToken, metrics)
+	} else if params.RLB != nil {
+		if params.Stateless {
+			log.Warn("rlb_gen requires cached mode; ignoring stateless=true")
+		}
+		log.Info("rlb generation: prompt=%d tokens", len(promptIDs))
+		genErr = e.generateRLB(promptIDs, maxTokens, stopSet, params, onToken, metrics)
+	} else if e.IsDiffusion() {
 		if params.Streaming {
 			T := 64
 			if params.Diffusion != nil && params.Diffusion.Steps > 0 {

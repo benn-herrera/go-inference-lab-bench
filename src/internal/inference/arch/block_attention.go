@@ -251,7 +251,9 @@ func (b *AttentionBuilder) BuildCached(
 	q := ggml.Permute(ctx, kv.Q, 0, 2, 1, 3)
 	nKVHeadsActual := kv.NKVHeads
 	if kv.HasKV {
-		writeCacheKV(ctx, gf, kv.K, kv.V, cache, inputs.SeqPos, nKVHeadsActual)
+		if inputs.WriteKV {
+			writeCacheKV(ctx, gf, kv.K, kv.V, cache, inputs.SeqPos, nKVHeadsActual)
+		}
 		kAttn, vAttn := selectCachedKV(ctx, cache, inputs.SeqPos, kv.K, kv.V, headDim, inputs.NKV, nKVHeadsActual)
 		cur = scaledDotProductAttention(ctx, q, kAttn, vAttn, mask, kqScale, nHeads, inputs.NTokens, inputs.Captures, inputs.FlashAttn, kqForceF32(config))
 	} else {

@@ -1,4 +1,4 @@
-# Go Inference Lab Bench
+# README – Inference Lab Bench
 
 From-scratch Go LLM inference engine for R&D into inference mechanics. Multi-model API server, data-driven architecture definition via TOML DSL, KV-cached and stateless inference, and visualization tooling.
 
@@ -10,7 +10,7 @@ From-scratch Go LLM inference engine for R&D into inference mechanics. Multi-mod
 - Data-driven architecture definition via TOML DSL — adding architectures is primarily a data-writing operation
 - Zero model-specific Go code — chat templates from GGUF `tokenizer.chat_template` via gonja; BOS/EOS from GGUF metadata
 - KV-cached and stateless inference
-- OpenAI-compatible API (`/api/v1/chat/completions`) with extensions: `stateless`, `enable_thinking`, `elide_thinking`, `logprobs`
+- OpenAI-compatible API (`/api/v1/chat/completions`) with extensions: `logprobs`/`top_logprobs` top-level, `enable_thinking` under `chat_template_kwargs`, and `stateless`/`elide_thinking`/`flash_attention`/`diffusion` under `bench_custom`
 - Non-streaming responses include `usage` with token counts, throughput (tokens/sec), and timing
 - 7 working architectures (GGUF)
   - Llama 3B
@@ -19,17 +19,12 @@ From-scratch Go LLM inference engine for R&D into inference mechanics. Multi-mod
   - DeepSeek-V2,
   - LLaDA, LLaDA-MoE (Diffusion text generation)
 - Inference equivalence testing against llama-server (validates logprobs match within FP variance)
-- Support for loading from swiftensors (Hugging Face format)
+- Support for loading from safetensors (Hugging Face format)
   - Gemma-4, LLaDA, Qwen3.5
 - SVG architecture visualizer: `bench gen-arch-diagram` generates `*.arch.svg`, `*.layers.svg` from TOML
   - Gemma-4 and Qwen3.5 also have `*.vision.svg` and `*.vision.layers.svg` 
 
-For architecture details, invariants, and development workflow: **[AGENTS.md](AGENTS.md)** and **[ARCHITECTURE.md](ARCHITECTURE.md)**.
-
-## IMPORTANT NOTE ABOUT CLAUDE.md
-
-Do not grow it past 50 lines. Keep it tight and focused on critical persistent behaviors.
-It is injected *every turn* so filling it with heartfelt pleas for various behaviors is a tremendous waste of tokens.
+For the API, configuration, and model-format contracts and the system invariants: **[SPEC.md](SPEC.md)**. For codebase structure and data flow: **[ARCHITECTURE.md](ARCHITECTURE.md)**. For development workflow and conventions: **[CONVENTIONS.md](CONVENTIONS.md)**.
 
 ## Quick Start
 
@@ -40,8 +35,10 @@ It is injected *every turn* so filling it with heartfelt pleas for various behav
   files carry no tokenizer; bench loads it from this sidecar). `make serve`
   runs this automatically, but `./bin/bench serve-api` directly will not.
 - if the same `[name]` exists as both a `.gguf` and a `.st/` the .gguf will be used
-- there's also a make rule for generating `[name].gguf` from `[name].st/`
-  - `make models/[name].gguf`
+- there's also a make rule for generating an F16 gguf from `[name].st/`
+  - `make models/[name]-f16.gguf`
+- multimodal decoders bind their `mmproj-[name].gguf` sidecar only when the
+  server is started with `--auto-mmproj` (off by default)
 
 
 ```bash
@@ -52,9 +49,9 @@ make
 make serve
 
 # Test inference
-./test_inference.sh "What is 2+2?"
-./test_inference.sh --loop                # interactive (acontextual)
-ALL_MODELS=true ./test_inference.sh "Hi"   # test every loaded model
+bash test_inference.sh "What is 2+2?"
+bash test_inference.sh --loop                # interactive (acontextual)
+ALL_MODELS=true bash test_inference.sh "Hi"   # test every loaded model
 
 # Validate logprob equivalence against llama-server (requires Homebrew llama.cpp)
 make equiv-test
@@ -73,15 +70,20 @@ curl -X POST localhost:11116/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"default","messages":[{"role":"user","content":"Hi"}],"stream":true}'
 
-# Stateless mode (no KV cache)
+# Stateless mode (no KV cache) — bench extensions live under bench_custom
 curl -X POST localhost:11116/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"default","messages":[{"role":"user","content":"Hi"}],"stateless":true}'
+  -d '{"model":"default","messages":[{"role":"user","content":"Hi"}],"bench_custom":{"stateless":true}}'
+
+# Thinking mode — passed through to the chat template
+curl -X POST localhost:11116/api/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Hi"}],"chat_template_kwargs":{"enable_thinking":true}}'
 
 # Diffusion generation (LLaDA models only; ignored on autoregressive models)
 curl -X POST localhost:11116/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"default","messages":[{"role":"user","content":"Hi"}],"diffusion":{"steps":64,"block_length":64}}'
+  -d '{"model":"default","messages":[{"role":"user","content":"Hi"}],"bench_custom":{"diffusion":{"steps":64,"block_length":64}}}'
 
 # Control endpoints
 curl 'localhost:11116/ctl/?memstats'   # memory statistics
