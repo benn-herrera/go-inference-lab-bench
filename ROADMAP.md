@@ -7,7 +7,7 @@
 * None open
 
 ## Tech Debt
-* Code review following vision support implementation - a LOT has changed.
+* None open
 
 ## Features
 * More safetensors architectures (.arch.stmap.toml)
