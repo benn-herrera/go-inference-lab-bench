@@ -7,12 +7,17 @@ GH_ROOT := $(shell dirname $$(git remote -v | awk '{print $$2; exit 0;}'))
 
 all: build
 
-AGENTS_REPO := https://github.com/benn-herrera/adjagent.git
-AGENTS_DIR := .claude/$(basename $(notdir $(AGENTS_REPO)))
+ADJAGENT_VER := 0.16.0
+VENV := .venv
+PYTHON := $(VENV)/bin/python
+ADJAGENT := $(VENV)/bin/adjagent
+.PHONY: agents
 agents:
-	@mkdir -p $(dir $(AGENTS_DIR))
-	@[[ -d "$(AGENTS_DIR)" ]] && git -C "$(AGENTS_DIR)" pull || git -C "$(dir $(AGENTS_DIR))" clone $(AGENTS_REPO)
-	just --justfile $(AGENTS_DIR)/justfile install "$(CURDIR)"
+	[[ -x "$(PYTHON)" ]] || python3 -m venv "$(VENV)"
+	[[ -x "$(ADJAGENT)" && "$$("$(ADJAGENT)" --version)" == "$(ADJAGENT_VER)" ]] || \
+	  "$(PYTHON)" -m pip install "git+https://github.com/benn-herrera/adjagent@v$(ADJAGENT_VER)"
+	"$(ADJAGENT)" install devpro . --harness=claude
+	"$(ADJAGENT)" install devpro . --harness=opencode
 
 build:
 	$(MAKE) -C src all
