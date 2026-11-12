@@ -7,17 +7,17 @@ GH_ROOT := $(shell dirname $$(git remote -v | awk '{print $$2; exit 0;}'))
 
 all: build
 
-ADJAGENT_VER := 0.16.0
+DEVPRO_VER := 0.17.0
 VENV := .venv
 PYTHON := $(VENV)/bin/python
-ADJAGENT := $(VENV)/bin/adjagent
+DEVPRO := $(VENV)/bin/devpro
 .PHONY: agents
 agents:
-	[[ -x "$(PYTHON)" ]] || python3 -m venv "$(VENV)"
-	[[ -x "$(ADJAGENT)" && "$$("$(ADJAGENT)" --version)" == "$(ADJAGENT_VER)" ]] || \
-	  "$(PYTHON)" -m pip install "git+https://github.com/benn-herrera/adjagent@v$(ADJAGENT_VER)"
-	"$(ADJAGENT)" install devpro . --harness=claude
-	"$(ADJAGENT)" install devpro . --harness=opencode
+	[[ -x "$(PYTHON)" ]] || python3 -m venv --upgrade-deps "$(VENV)"
+	[[ -x "$(DEVPRO)" && "$$("$(DEVPRO)" --version)" == "$(DEVPRO_VER)" ]] || \
+	  "$(PYTHON)" -m pip install "git+https://github.com/benn-herrera/devpro@v$(DEVPRO_VER)"
+	"$(DEVPRO)" install . --harness=opencode
+	"$(DEVPRO)" install . --harness=claude
 
 build:
 	$(MAKE) -C src all
@@ -93,3 +93,5 @@ models/%.st/tokenizer.gguf: models/%.st/tokenizer.json models/%.st/tokenizer_con
 # decoder GGUF, regenerated whenever the decoder is.
 models/%-f16.gguf: $$(wildcard models/%.st/*.json) $$(wildcard models/%.st/*.safetensors) $$(wildcard models/%.st/*.jinja) $$(wildcard models/%.st/*.py)
 	OUT_TYPE=f16 ./tools/hf_to_gguf.sh --bench-convert $(dir $(<))
+
+-include .opencode/plugins/devpro/skills/docdicer/tools/runner-snippets/docdicer.mk

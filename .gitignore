@@ -16,6 +16,7 @@
 *.st
 *.pyc
 __debug_*
+.venv/
 __pycache__/
 build/
 lib/
@@ -23,18 +24,13 @@ bin/
 nohup.out
 .DS_Store
 
-.venv/
 .claude/
 .claude-temp/
 .opencode/
 .opencode-temp/
+backup.*
 
 src/third_party/ggml/
 memory/session-state.md
 tools/llama.cpp/
 tools/llama.cpp
-
-# MAD review and status - this output is primarily for local work.
-# if persistence is needed extract burndown list and open an issue or issues.
-mad-review/
-mad-design/
