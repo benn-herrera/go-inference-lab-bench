@@ -7,17 +7,10 @@ GH_ROOT := $(shell dirname $$(git remote -v | awk '{print $$2; exit 0;}'))
 
 all: build
 
-DEVPRO_VER := 0.17.0
-VENV := .venv
-PYTHON := $(VENV)/bin/python
-DEVPRO := $(VENV)/bin/devpro
-.PHONY: agents
 agents:
-	[[ -x "$(PYTHON)" ]] || python3 -m venv --upgrade-deps "$(VENV)"
-	[[ -x "$(DEVPRO)" && "$$("$(DEVPRO)" --version)" == "$(DEVPRO_VER)" ]] || \
-	  "$(PYTHON)" -m pip install "git+https://github.com/benn-herrera/devpro@v$(DEVPRO_VER)"
-	"$(DEVPRO)" install . --harness=opencode
-	"$(DEVPRO)" install . --harness=claude
+	@command -v devpro > /dev/null || { echo 'devpro not installed. run `brew install benn-herrera/tap/devpro`' >&2; exit 1; }
+	devpro install . --harness=claude
+	devpro install . --harness=opencode
 
 build:
 	$(MAKE) -C src all
